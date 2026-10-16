@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Lineage — a phylogenetic tree machine</title>
+<style>
+  :root { --ink:#e8e0cf; --dim:#8a8272; --bg:#0d0f0c; --panel:#14170f;
+          --amber:#e0a458; --teal:#6fc3a8; --blood:#b0503c; --line:#2a2e22; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:16px/1.55 Georgia, "Times New Roman", serif; }
+  header { padding:2.2rem 2rem 0.6rem; max-width:70rem; }
+  h1 { font-size:2rem; margin:0 0 0.2rem; letter-spacing:0.02em; }
+  h1 .ghost { color:var(--amber); }
+  .sub { color:var(--dim); font-style:italic; max-width:44rem; }
+  #deck { display:flex; gap:1rem; padding:1rem 2rem; max-width:70rem; flex-wrap:wrap; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:1rem 1.2rem; }
+  #controls { flex:1 1 22rem; }
+  #ledger-panel { flex:1 1 30rem; max-height:22rem; overflow-y:auto; }
+  .row { display:flex; align-items:center; gap:0.6rem; margin:0.5rem 0; flex-wrap:wrap; }
+  button { background:#1e2318; color:var(--ink); border:1px solid #3a4030; border-radius:5px;
+           padding:0.45rem 0.9rem; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--amber); color:var(--amber); }
+  button.danger:hover { border-color:var(--blood); color:var(--blood); }
+  label { color:var(--dim); font-size:0.9rem; display:flex; align-items:center; gap:0.4rem; }
+  input[type=range] { accent-color:var(--amber); width:8rem; }
+  #stats { display:flex; gap:1.4rem; flex-wrap:wrap; padding:0.6rem 2rem; color:var(--dim); font-size:0.95rem; }
+  #stats b { color:var(--ink); font-weight:normal; }
+  #stats .doom { color:var(--blood); }
+  #tree-wrap { margin:0 2rem 2rem; border:1px solid var(--line); border-radius:8px;
+               background:#0a0c08; overflow:auto; max-height:60vh; }
+  #ledger { list-style:none; margin:0; padding:0; font-size:0.92rem; }
+  #ledger li { padding:0.25rem 0; border-bottom:1px dotted #22261a; color:var(--dim); }
+  #ledger li.birth { color:var(--teal); } #ledger li.death { color:#9a8f7a; }
+  #ledger li.bolide { color:var(--blood); font-weight:bold; }
+  #ledger .t { color:#5c574a; margin-right:0.5rem; }
+  #specimen { margin:0 2rem 3rem; max-width:70rem; }
+  #specimen h3 { margin:0.4rem 0; font-style:italic; color:var(--amber); }
+  footer { padding:0 2rem 3rem; color:#5c574a; font-size:0.85rem; max-width:70rem; }
+  svg text { font-family:Georgia, serif; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="ghost">Ghost Lineage</span> — a phylogenetic tree machine</h1>
+  <p class="sub">One ancestor. A wandering climate. A rock from space, occasionally.
+     Watch a whole evolutionary tree grow, branch, and mostly die — every species named,
+     every extinction logged. Click any branch to meet the animal.</p>
+</header>
+
+<div id="stats">
+  <span>Myr <b id="st-t">0</b></span>
+  <span>born <b id="st-born">0</b></span>
+  <span>extinct <b id="st-died">0</b></span>
+  <span>alive <b id="st-alive">0</b></span>
+  <span>oldest living <b id="st-long">—</b></span>
+  <span id="st-bolide"></span>
+</div>
+
+<div id="deck">
+  <div class="panel" id="controls">
+    <div class="row">
+      <button id="btn-play">▶ run</button>
+      <button id="btn-step">step 1 Myr</button>
+      <button id="btn-reseed">reseed world</button>
+      <button id="btn-bolide" class="danger">☄ summon bolide</button>
+    </div>
+    <div class="row">
+      <label>mutation <input type="range" id="sl-mut" min="0.02" max="0.4" step="0.01" value="0.15"></label>
+      <label>extinction <input type="range" id="sl-ext" min="0.2" max="3" step="0.1" value="1"></label>
+    </div>
+    <div class="row">
+      <label>speciation <input type="range" id="sl-spe" min="0.01" max="0.2" step="0.01" value="0.06"></label>
+      <label>speed <input type="range" id="sl-spd" min="1" max="12" step="1" value="4"></label>
+    </div>
+  </div>
+  <div class="panel" id="ledger-panel">
+    <h3 style="margin:0 0 0.4rem; font-size:1rem; color:var(--dim)">field ledger</h3>
+    <ul id="ledger"></ul>
+  </div>
+</div>
+
+<div id="tree-wrap"><svg id="tree" width="1200" height="400"></svg></div>
+
+<div class="panel" id="specimen">
+  <h3 id="sp-name">no specimen selected</h3>
+  <div id="sp-body" style="color:var(--dim)">Click any branch of the tree.</div>
+</div>
+
+<footer>
+  Time runs left to right, one tick per million years. Grey branches are extinct; amber ones still walk.
+  The climate drifts on its own schedule — adaptation is a rumor, extinction is the rule.
+</footer>
+
+<script src="lineage.js"></script>
+<script>
+"use strict";
+var GL = window.GhostLineage;
+var world, playing = false, timer = null;
+var PX = 7, LANE_H = 15, PAD = 40;
+
+function newWorld() {
+  world = new GL.World((Math.random() * 1e9) | 0);
+  render();
+}
+
+function traitDesc(sp) {
+  var t = sp.traits, bits = [];
+  if (t.size > 1) bits.push("huge"); else if (t.size < -1) bits.push("tiny");
+  if (t.armor > 1) bits.push("armored"); else if (t.armor < -1) bits.push("soft-bodied");
+  if (t.noct > 1) bits.push("nocturnal"); else if (t.noct < -1) bits.push("diurnal");
+  if (t.spd > 1) bits.push("swift"); else if (t.spd < -1) bits.push("sluggish");
+  return bits.length ? bits.join(", ") : "unremarkable";
+}
+
+function layout() {
+  // lane packing: lowest free lane per species, in birth order
+  var lanes = [], ends = [];
+  world.species.forEach(function (sp) {
+    var lane = 0;
+    while (lane < ends.length && ends[lane] > sp.bornAt) lane++;
+    lanes[sp.id] = lane;
+    if (lane === ends.length) ends.push(sp.diedAt === null ? world.t : sp.diedAt);
+    else ends[lane] = (sp.diedAt === null ? world.t : sp.diedAt);
+  });
+  return { lanes: lanes, count: ends.length };
+}
+
+function render() {
+  var L = layout(), H = Math.max(200, L.count * LANE_H + PAD * 2);
+  var W = Math.max(800, world.t * PX + PAD * 2);
+  var svg = document.getElementById("tree");
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  var ns = "http://www.w3.org/2000/svg";
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  // time gridlines every 25 Myr
+  for (var g = 0; g <= world.t; g += 25) {
+    var ln = document.createElementNS(ns, "line");
+    ln.setAttribute("x1", PAD + g * PX); ln.setAttribute("x2", PAD + g * PX);
+    ln.setAttribute("y1", 0); ln.setAttribute("y2", H);
+    ln.setAttribute("stroke", "#1c2013"); svg.appendChild(ln);
+    var tx = document.createElementNS(ns, "text");
+    tx.setAttribute("x", PAD + g * PX + 4); tx.setAttribute("y", 14);
+    tx.setAttribute("fill", "#5c574a"); tx.setAttribute("font-size", "11");
+    tx.textContent = g + " Myr"; svg.appendChild(tx);
+  }
+
+  world.species.forEach(function (sp) {
+    var lane = L.lanes[sp.id], y = PAD + lane * LANE_H;
+    var x0 = PAD + sp.bornAt * PX;
+    var x1 = PAD + (sp.diedAt === null ? world.t : sp.diedAt) * PX;
+    var alive = sp.diedAt === null;
+
+    if (sp.parent !== null) {
+      var p = world.species[sp.parent - 1];
+      var py = PAD + L.lanes[p.id] * LANE_H;
+      var elbow = document.createElementNS(ns, "path");
+      elbow.setAttribute("d", "M " + x0 + " " + py + " L " + x0 + " " + y);
+      elbow.setAttribute("stroke", alive ? "#6fc3a8" : "#4a4436");
+      elbow.setAttribute("stroke-width", alive ? 1.6 : 1);
+      elbow.setAttribute("opacity", alive ? 0.8 : 0.5);
+      svg.appendChild(elbow);
+    }
+
+    var br = document.createElementNS(ns, "line");
+    br.setAttribute("x1", x0); br.setAttribute("x2", x1);
+    br.setAttribute("y1", y); br.setAttribute("y2", y);
+    if (alive) {
+      var hue = 40 + Math.max(-25, Math.min(25, sp.traits.noct * 8));
+      br.setAttribute("stroke", "hsl(" + hue + ",55%,55%)");
+      br.setAttribute("stroke-width", 3);
+    } else {
+      br.setAttribute("stroke", "#4a4436"); br.setAttribute("stroke-width", 1.6);
+      br.setAttribute("opacity", 0.75);
+    }
+    br.style.cursor = "pointer";
+    br.addEventListener("click", function () { showSpecimen(sp); });
+    svg.appendChild(br);
+
+    if (alive) {
+      var dot = document.createElementNS(ns, "circle");
+      dot.setAttribute("cx", x1); dot.setAttribute("cy", y); dot.setAttribute("r", 3);
+      dot.setAttribute("fill", "#e0a458");
+      svg.appendChild(dot);
+    }
+  });
+
+  var st = world.stats();
+  document.getElementById("st-t").textContent = st.t;
+  document.getElementById("st-born").textContent = st.born;
+  document.getElementById("st-died").textContent = st.died;
+  document.getElementById("st-alive").textContent = st.alive;
+  document.getElementById("st-long").textContent = st.longest ? st.longest.name + " (" + st.longest.age + " Myr)" : "—";
+  document.getElementById("st-bolide").textContent = st.bolide ? "☄ IMPACT WINTER" : "";
+  document.getElementById("st-bolide").className = st.bolide ? "doom" : "";
+
+  var ul = document.getElementById("ledger");
+  ul.innerHTML = "";
+  world.ledger.slice(0, 60).forEach(function (e) {
+    var li = document.createElement("li");
+    li.className = e.type;
+    li.innerHTML = '<span class="t">' + e.t + " Myr</span>" + e.text;
+    ul.appendChild(li);
+  });
+}
+
+function showSpecimen(sp) {
+  document.getElementById("sp-name").textContent = sp.name;
+  var status = sp.diedAt === null
+    ? "alive — has walked the earth " + (world.t - sp.bornAt) + " Myr and counting"
+    : "extinct — lived " + sp.bornAt + "–" + sp.diedAt + " Myr (" + (sp.diedAt - sp.bornAt) + " Myr total)";
+  document.getElementById("sp-body").innerHTML =
+    status + "<br>build: <i>" + traitDesc(sp) + "</i>" +
+    "<br>children: " + sp.children.length +
+    (sp.parent !== null ? " · parent: <i>" + world.species[sp.parent - 1].name + "</i>" : " · the root of all this");
+}
+
+function setPlaying(v) {
+  playing = v;
+  document.getElementById("btn-play").textContent = playing ? "⏸ pause" : "▶ run";
+  if (timer) { clearInterval(timer); timer = null; }
+  if (playing) {
+    var step = function () {
+      var n = parseInt(document.getElementById("sl-spd").value, 10);
+      for (var i = 0; i < n; i++) world.tick();
+      render();
+    };
+    timer = setInterval(step, 250);
+  }
+}
+
+document.getElementById("btn-play").onclick = function () { setPlaying(!playing); };
+document.getElementById("btn-step").onclick = function () { world.tick(); render(); };
+document.getElementById("btn-reseed").onclick = function () { setPlaying(false); newWorld(); };
+document.getElementById("btn-bolide").onclick = function () { world.summonBolide(); render(); };
+["mut", "ext", "spe"].forEach(function (k, i) {
+  var id = { mut: "sl-mut", ext: "sl-ext", spe: "sl-spe" }[k];
+  document.getElementById(id).oninput = function (e) {
+    var key = { mut: "mutation", ext: "extinction", spe: "speciation" }[k];
+    world.params[key] = parseFloat(e.target.value);
+  };
+});
+
+newWorld();
+</script>
+</body>
+</html>
